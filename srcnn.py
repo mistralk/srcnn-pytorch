@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pathlib
 import math
+from datetime import datetime
 
 class ImageDataset(Dataset):
     def __init__(self, root_dir, path_list, transform=None):
@@ -85,7 +86,7 @@ def load_testset(root_dir):
 def train(dataloader):
     device = torch.device('cuda')
 
-    n_epochs = 30
+    n_epochs = 500
     
     model = torch.nn.Sequential(
         torch.nn.ZeroPad2d(4),
@@ -169,9 +170,19 @@ def main():
     train_dataloader = load_dataset('dataset/')
     test_dataloader = load_testset('testset/')
 
+    # Timer start 
+    time_fmt = '%H:%M:%S'
+    present = datetime.now().strftime(time_fmt)
+
     model = train(train_dataloader)
     test(model, test_dataloader)
 
+    # Timer end
+    now = datetime.now().strftime(time_fmt)
+    elapsed_time = datetime.strptime(now, time_fmt) - datetime.strptime(present, time_fmt)
+    print()
+    print('Elapsed time for training: ', elapsed_time)
+    print()
 
 if __name__ == '__main__':
     main()
