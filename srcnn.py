@@ -33,7 +33,9 @@ class ImageDataset(Dataset):
             transforms.ToTensor()])
 
         lowres = downsample(gt)
-        gt = transforms.Compose([transforms.ToTensor()])(gt)
+        gt = transforms.Compose([
+            transforms.CenterCrop(128-8-2-4),
+            transforms.ToTensor()])(gt)
 
         return {'lowres': lowres, 'label': gt}
 
@@ -83,31 +85,35 @@ def load_testset(root_dir):
     return test_dataloader
 
 
-def train(dataloader):
+def train(dataloader, resume=False):
     device = torch.device('cuda')
 
-    n_epochs = 500
+    n_epochs = 100
+    loss_fn = torch.nn.MSELoss().to(device)
+    learning_rate = 0.001
     
     model = torch.nn.Sequential(
-        torch.nn.ZeroPad2d(4),
+        #torch.nn.ZeroPad2d(4),
         torch.nn.Conv2d(3, 64, (9,9)),
         torch.nn.ReLU(),
         
-        torch.nn.ZeroPad2d(1),
+        #torch.nn.ZeroPad2d(1),
         torch.nn.Conv2d(64, 32, (3,3)),
         torch.nn.ReLU(),
         
-        torch.nn.ZeroPad2d(2),
+        #torch.nn.ZeroPad2d(2),
         torch.nn.Conv2d(32, 3, (5,5))
     )
-    
     model.to(device)
-
-    loss_fn = torch.nn.MSELoss().to(device)
-    learning_rate = 0.001
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    for epoch in range(n_epochs):
+    start_epoch = 0
+    
+    if resume is True:
+        model, optimizer, start_epoch = load_checkpoint(
+                    'model_epoch_0.pth', model, optimizer, resume_training=True)
+
+    for epoch in range(start_epoch, n_epochs):
         avg_loss = 0.0
         for i_batch, batch in enumerate(dataloader):
             x = batch['lowres'].to(device)
@@ -129,7 +135,7 @@ def train(dataloader):
         print('Epoch {} average - Loss:{:.6f} PSNR:{}'.format(
                     epoch, avg_loss, avg_psnr))
 
-        save_model(model, epoch)
+        save_checkpoint(model, optimizer, epoch)
     
     return model
 
@@ -156,14 +162,27 @@ def test(model, dataloader):
     print('Test set - Average PSNR:{}'.format(avg_psnr))
 
 
-def use(model_path):
-    device = torch.device('cuda')
-
-
-def save_model(model, epoch):
-    path = 'model_{}.pth'.format(epoch)
-    torch.save(model, path)
+def save_checkpoint(model, optimizer, epoch):
+    path = 'model_epoch_{}.pth'.format(epoch)
+    torch.save({'epoch': epoch, 
+                'model_state_dict': model.state_dict(), 
+                'optimizer_state_dict': optimizer.state_dict()},
+                path)
     print(path, 'saved')
+
+
+def load_checkpoint(path, model, optimizer, resume_training=False):
+    checkpoint = torch.load(path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']+1
+
+    if resume_training is True:
+        model.train()
+    else:
+        model.eval()
+
+    return model, optimizer, epoch
 
 
 def main():
@@ -174,7 +193,7 @@ def main():
     time_fmt = '%H:%M:%S'
     present = datetime.now().strftime(time_fmt)
 
-    model = train(train_dataloader)
+    model = train(train_dataloader, resume=True)
     test(model, test_dataloader)
 
     # Timer end
