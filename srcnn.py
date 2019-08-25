@@ -1,7 +1,8 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms, utils
-from PIL import Image
+from PIL import Image, ImageFilter
 import numpy as np
 import matplotlib.pyplot as plt
 import pathlib
@@ -26,13 +27,14 @@ class ImageDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
         gt = img
-
+        
+        lowres = img.filter(ImageFilter.GaussianBlur)
         downsample = transforms.Compose([
             transforms.Resize(64, Image.BICUBIC),
             transforms.Resize(128, Image.BICUBIC),
             transforms.ToTensor()])
+        lowres = downsample(lowres)
 
-        lowres = downsample(gt)
         gt = transforms.Compose([
             transforms.CenterCrop(128-8-2-4),
             transforms.ToTensor()])(gt)
@@ -78,7 +80,7 @@ def load_testset(root_dir):
     
     test_dataset = ImageDataset(root_dir, img_paths, transform=transform)
     test_dataloader = DataLoader(test_dataset, batch_size=len(test_dataset), 
-                                  shuffle=False, num_workers=1)
+                                  shuffle=False, num_workers=12)
     
     print(len(test_dataset), 'test image paths imported from', root_dir)
 
@@ -87,56 +89,78 @@ def load_testset(root_dir):
 
 def train(dataloader, resume=False):
     device = torch.device('cuda')
+    writer = SummaryWriter('runs/Aug25_19-22-24_mistralk-A320M-S2H/',purge_step=72830)
 
-    n_epochs = 100
+    n_epochs = 1000
     loss_fn = torch.nn.MSELoss().to(device)
     learning_rate = 0.001
     
     model = torch.nn.Sequential(
-        #torch.nn.ZeroPad2d(4),
         torch.nn.Conv2d(3, 64, (9,9)),
         torch.nn.ReLU(),
-        
-        #torch.nn.ZeroPad2d(1),
+
         torch.nn.Conv2d(64, 32, (3,3)),
         torch.nn.ReLU(),
         
-        #torch.nn.ZeroPad2d(2),
         torch.nn.Conv2d(32, 3, (5,5))
     )
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
+    for g in optimizer.param_groups:
+        g['lr'] = learning_rate
+
     start_epoch = 0
     
     if resume is True:
         model, optimizer, start_epoch = load_checkpoint(
-                    'model_epoch_0.pth', model, optimizer, resume_training=True)
+                    'model_epoch_182.pth', model, optimizer, resume_training=True)
 
     for epoch in range(start_epoch, n_epochs):
         avg_loss = 0.0
+        avg_psnr = 0.0
         for i_batch, batch in enumerate(dataloader):
             x = batch['lowres'].to(device)
             y = batch['label'].to(device)
 
             y_pred = model(x)
+            y_pred = torch.clamp(y_pred, 0.0, 1.0)
 
             optimizer.zero_grad()
             loss = loss_fn(y_pred, y)
             loss.backward()
             optimizer.step()
+
+            psnr = 10 * math.log10(1/loss)
             
-            avg_loss += loss
-            print('Epoch {}({}/{}) - Loss:{:.6f}'.format(epoch, 
-                        i_batch, len(dataloader), loss.item()))
-        
+            avg_loss += loss.item()
+            avg_psnr += psnr
+            print('Epoch {}({}/{}) - Loss:{:.6f} PSNR:{}'.format(epoch, 
+                        i_batch, len(dataloader), loss.item(), psnr))
+
+            step = epoch * len(dataloader) + i_batch
+            if i_batch % 10 == 0:
+                writer.add_scalar('Accuracy/MSE', loss.item(), step)
+                writer.add_scalar('Accuracy/PSNR', psnr, step)
+             
+            if i_batch % 100 == 0:
+                grid_x = utils.make_grid(x)
+                grid_pred = utils.make_grid(y_pred)
+                grid_y = utils.make_grid(y)
+                
+                writer.add_image('Result/lowres', grid_x, step)
+                writer.add_image('Result/prediction', grid_pred, step)
+                writer.add_image('Result/ground truth', grid_y, step)
+            
         avg_loss /= len(dataloader)
-        avg_psnr = 10 * math.log10(1 / avg_loss)
+        avg_psnr /= len(dataloader)
         print('Epoch {} average - Loss:{:.6f} PSNR:{}'.format(
                     epoch, avg_loss, avg_psnr))
 
         save_checkpoint(model, optimizer, epoch)
     
+    writer.close()
+
     return model
 
 
