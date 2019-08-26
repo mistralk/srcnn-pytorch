@@ -36,7 +36,7 @@ class ImageDataset(Dataset):
         lowres = downsample(lowres)
 
         gt = transforms.Compose([
-            transforms.CenterCrop(128-8-2-4),
+            transforms.CenterCrop(128-8-2-4-1-1),
             transforms.ToTensor()])(gt)
 
         return {'lowres': lowres, 'label': gt}
@@ -53,7 +53,7 @@ def load_dataset(root_dir):
         transforms.RandomCrop(128)])
     
     train_dataset = ImageDataset(root_dir, img_paths, transform)  
-    train_dataloader = DataLoader(train_dataset, batch_size=128, 
+    train_dataloader = DataLoader(train_dataset, batch_size=64, 
                                   shuffle=True, num_workers=12)
     
     print(len(train_dataset), 'image paths imported from', root_dir)
@@ -89,16 +89,29 @@ def load_testset(root_dir):
 
 def train(dataloader, resume=False):
     device = torch.device('cuda')
-    writer = SummaryWriter('runs/Aug25_19-22-24_mistralk-A320M-S2H/',purge_step=72830)
+    #writer = SummaryWriter('runs/Aug26_10-02-37_mistralk-A320M-S2H/',purge_step=4700)
+    writer = SummaryWriter()
 
     n_epochs = 1000
     loss_fn = torch.nn.MSELoss().to(device)
-    learning_rate = 0.001
+    learning_rate = 0.0001
     
     model = torch.nn.Sequential(
-        torch.nn.Conv2d(3, 64, (9,9)),
+        torch.nn.Conv2d(3, 32, (9,9)),
         torch.nn.ReLU(),
 
+        torch.nn.BatchNorm2d(32),
+
+        torch.nn.Conv2d(32, 64, (3,3)),
+        torch.nn.ReLU(),
+
+        torch.nn.BatchNorm2d(64),
+        
+        torch.nn.Conv2d(64, 64, (1,1)),
+        torch.nn.ReLU(),
+        
+        torch.nn.BatchNorm2d(64),
+        
         torch.nn.Conv2d(64, 32, (3,3)),
         torch.nn.ReLU(),
         
@@ -107,14 +120,15 @@ def train(dataloader, resume=False):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    for g in optimizer.param_groups:
-        g['lr'] = learning_rate
-
     start_epoch = 0
+    step = 0
     
     if resume is True:
-        model, optimizer, start_epoch = load_checkpoint(
-                    'model_epoch_182.pth', model, optimizer, resume_training=True)
+        model, optimizer, start_epoch, step = load_checkpoint(
+                    'model_epoch_215.pth', model, optimizer, resume_training=True)
+    
+    for g in optimizer.param_groups:
+        g['lr'] = learning_rate
 
     for epoch in range(start_epoch, n_epochs):
         avg_loss = 0.0
@@ -130,6 +144,7 @@ def train(dataloader, resume=False):
             loss = loss_fn(y_pred, y)
             loss.backward()
             optimizer.step()
+            step += 1
 
             psnr = 10 * math.log10(1/loss)
             
@@ -138,12 +153,11 @@ def train(dataloader, resume=False):
             print('Epoch {}({}/{}) - Loss:{:.6f} PSNR:{}'.format(epoch, 
                         i_batch, len(dataloader), loss.item(), psnr))
 
-            step = epoch * len(dataloader) + i_batch
-            if i_batch % 10 == 0:
+            if step % 10 == 0:
                 writer.add_scalar('Accuracy/MSE', loss.item(), step)
                 writer.add_scalar('Accuracy/PSNR', psnr, step)
              
-            if i_batch % 100 == 0:
+            if step % 100 == 0:
                 grid_x = utils.make_grid(x)
                 grid_pred = utils.make_grid(y_pred)
                 grid_y = utils.make_grid(y)
@@ -157,15 +171,11 @@ def train(dataloader, resume=False):
         print('Epoch {} average - Loss:{:.6f} PSNR:{}'.format(
                     epoch, avg_loss, avg_psnr))
 
-        save_checkpoint(model, optimizer, epoch)
+        save_checkpoint(model, optimizer, epoch, step)
     
     writer.close()
 
     return model
-
-
-def valid():
-    return 0
 
 
 def test(model, dataloader):
@@ -186,9 +196,10 @@ def test(model, dataloader):
     print('Test set - Average PSNR:{}'.format(avg_psnr))
 
 
-def save_checkpoint(model, optimizer, epoch):
+def save_checkpoint(model, optimizer, epoch, step):
     path = 'model_epoch_{}.pth'.format(epoch)
     torch.save({'epoch': epoch, 
+                'step': step,
                 'model_state_dict': model.state_dict(), 
                 'optimizer_state_dict': optimizer.state_dict()},
                 path)
@@ -200,13 +211,14 @@ def load_checkpoint(path, model, optimizer, resume_training=False):
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     epoch = checkpoint['epoch']+1
+    step = checkpoint['step']+1
 
     if resume_training is True:
         model.train()
     else:
         model.eval()
 
-    return model, optimizer, epoch
+    return model, optimizer, epoch, step
 
 
 def main():
